@@ -68,446 +68,456 @@ def modelsRo(nprod, ndepot, ngarage, nstation, nvehicule, transtionCostMat, vehi
     ## Calculons d'abord le nombre d'étapes maximal T
     
     #Pour avoir le vehicule de capacité minimale
-    min_vehi_cap = min(vehiculeFleet, key=lambda x : x[1])[1]
+    max_vehi_cap = max(vehiculeFleet, key=lambda x : x[1])[1]
     
     #Pour avoir la station de demande maximale
     max_station_deman = max(max(stationMat, key=lambda x: max(x[1:]))[1:])
     
     #Calcule de T
-    T = 2*(nprod * nstation * math.ceil(max_station_deman / min_vehi_cap)) + 1
+    T = 2*(nprod * nstation * math.ceil(max_station_deman / max_vehi_cap)) + 1
     
-    
+    maxT = (T//nvehicule) + 1  # Ajustement de T en fonction du nombre de véhicules
     ##Modelisation du problème
+    
+    minT = math.ceil(max_station_deman / max_vehi_cap) * nstation  + 2 
+    
+    if minT > maxT:
+        minT , maxT = maxT, minT  # échanger si nécessaire
+    
+    print("minT:", minT, "maxT:", maxT)
         
     from ortools.sat.python import cp_model
     
     model = cp_model.CpModel()
     
-    ##P_kt est la variable de postion des caminons
-    P={}
-    ##T_kt est la variable gardant le type de produit du camion k au moment t
-    TC = {}
-    ##QCA_kt represente la quantité de produit que comporte le camion au moment t
-    QCA = {}
-    
-    
-    for k in range(1, nvehicule+1):
-        for t in range(0, T+1):
-            P[(k,t)] = model.NewIntVar(lb=1, ub=nbre_places_totales, name=f"P_{k}_{t}")
-            TC[(k,t)] = model.NewIntVar(1, nprod, name=f"TC_{k}_{t}")
-            QCA[(k,t)] = model.NewIntVar(0, vehiculeFleet[k-1][1], name=f"QCA_{k}_{t}")
-    
-    #Initialisation des positions,
-    for k in range(1, nvehicule+1):
-        #Position initiale
-        garage_id = vehiculeFleet[k-1][2]
-        garage_index = next(i for i, place in enumerate(places_list) if place[0] == "G" and int(place[1]) == garage_id)
-        model.Add(P[(k,0)] == garage_index + 1)  # +1 car les variables sont de 1 à nbre_places_totales
+    for T in range(minT, maxT+1):
+        ##P_kt est la variable de postion des caminons
+        P={}
+        ##T_kt est la variable gardant le type de produit du camion k au moment t
+        TC = {}
+        ##QCA_kt represente la quantité de produit que comporte le camion au moment t
+        QCA = {}
         
-        #Type de produit initial
-        initial_product = int(vehiculeFleet[k-1][3])
-        model.Add(TC[(k,0)] == initial_product)
-        
-        #Quantité initiale
-        model.Add(QCA[(k,0)] == 0)
-        #Quantité finale
-        model.Add(QCA[(k,T)] == 0)
-    
-    
-    
-    ##Définition des variables concernant les dépôts
-    #QD_dpt est la quantité du produit du type p qu contient le dépôt d au moment t
-    QD = {}
-    
-    
-    for d in range(1, ndepot+1):
-        for p in range(1, nprod+1):
-            for t in range(T+1):
-                QD[(d, p, t)] = model.NewIntVar(0, depotMat[d-1][p+2], f"QD_{d}_{p}_{t}")
-    
-    #Initialisation des stocks des dépôts
-    for d in range(1, ndepot+1):
-        for p in range(1, nprod+1):
-            model.Add(QD[(d, p, 0)] == depotMat[d-1][p+2])
-                
-    ##Définition des variables concernant les stations
-    #QS_spt est la quantité du produit du type p qu contient la station s au moment t
-    QS = {}
-    
-    for s in range(1, nstation+1):
-        for p in range(1, nprod+1):
-            for t in range(T+1):
-                QS[(s, p, t)] = model.NewIntVar(0, stationMat[s-1][p+2], f"QS_{s}_{p}_{t}")
-                
-   
-    
-    
-    #Initialisation des quantités des stations et des stocks des dépôts
-    for s in range(1, nstation+1):
-        for p in range(1, nprod+1):
-            model.Add(QS[(s, p, 0)] == 0)
-            #Contrainte des quantié finale des stations
-            model.Add(QS[(s, p, T)] == stationMat[s-1][p+2])
-    
-    ##Contraintes modelisant qu'un camion qui quitte un garage doit aller à un dépôt
-    garage_indices = [i for i, place in enumerate(places_list) if place[0] == "G"]
-    depot_indices = [i for i, place in enumerate(places_list) if place[0] == "D"]
-
-    for k in range(1, nvehicule+1):
-        for t in range(1, T+1):
-            for g in garage_indices:
-                is_at_g = model.NewBoolVar(f"is_at_g_k{k}_t{t-1}_g{g}")
-                # réification: is_at_g <=> P[k,t-1] == g+1 (P est 1-based)
-                model.Add(P[(k, t-1)] == g+1).OnlyEnforceIf(is_at_g)
-                model.Add(P[(k, t-1)] != g+1).OnlyEnforceIf(is_at_g.Not())
-
-                # options autorisées à t : rester au même garage (g) ou aller dans un dépôt
-                allowed = [g] + depot_indices
-                b_vars = []
-                for j in allowed:
-                    b = model.NewBoolVar(f"b_move_k{k}_t{t}_fromg{g}_toj{j}")
-                    b_vars.append(b)
-                    model.Add(P[(k, t)] == j+1).OnlyEnforceIf(b)
-                    model.Add(P[(k, t)] != j+1).OnlyEnforceIf(b.Not())
-
-                # si is_at_g alors exactement une option doit être vraie
-                model.Add(sum(b_vars) == 1).OnlyEnforceIf(is_at_g)
-                
-    
-    ##Contraintes modelisant que si un vehicule revient au garage il ne sort plus
-    # indices (0-based) des garages
-    garage_indices = [i for i, place in enumerate(places_list) if place[0] == "G"]
-
-    for k in range(1, nvehicule+1):
-        for t in range(2, T):  # on commence à 1 pour permettre un départ initial du garage
-            for g in garage_indices:
-                is_at_g = model.NewBoolVar(f"is_at_g_k{k}_t{t}_g{g}")
-                # is_at_g <=> P[k,t] == g+1
-                model.Add(P[(k, t)] == g+1).OnlyEnforceIf(is_at_g)
-                model.Add(P[(k, t)] != g+1).OnlyEnforceIf(is_at_g.Not())
-                # si is_at_g alors pour tout u>t, P[k,u] == g+1
-                for u in range(t+1, T+1):
-                    model.Add(P[(k, u)] == g+1).OnlyEnforceIf(is_at_g)
-                    
-                    
-                    
-    ##une contraint pour dire qu'un véhicule ne doit pas changer de garage s'il doit revenir dans un garage
-    garage_indices = [i for i, place in enumerate(places_list) if place[0] == "G"]
-
-    for k in range(1, nvehicule+1):
-        # récupérer l'indice (0-based) du garage initial du véhicule k
-        initial_garage_id = int(vehiculeFleet[k-1][2])
-        initial_idx = next(i for i, place in enumerate(places_list) if place[0] == "G" and int(place[1]) == initial_garage_id)
-
-        # Interdire d'être dans un garage différent du garage initial, pour tout t
-        for t in range(0, T+1):
-            for g in garage_indices:
-                if g != initial_idx:
-                    model.Add(P[(k, t)] != g+1)
-    
-    #Au garage le volume ne change pas
-    for k in range(1, nvehicule+1):
-        for t in range(1, T+1):
-            for g in garage_indices:
-                is_at_g = model.NewBoolVar(f"is_at_g_k{k}_t{t}_g{g}")
-                model.Add(P[(k, t)] == g+1).OnlyEnforceIf(is_at_g)
-                model.Add(P[(k, t)] != g+1).OnlyEnforceIf(is_at_g.Not())
-                # Si le véhicule est au garage g à l'instant t, sa charge ne change pas entre t-1 et t
-                model.Add(QCA[(k, t)] == QCA[(k, t-1)]).OnlyEnforceIf(is_at_g)
-                
-                
-    ##A t=0 et t=T les véhicules sont dans les garages (déjà fait pour t=0)
-    for k in range(1, nvehicule+1):
-        # récupérer l'indice (0-based) du garage initial du véhicule k
-        initial_garage_id = int(vehiculeFleet[k-1][2])
-        initial_idx = next(i for i, place in enumerate(places_list) if place[0] == "G" and int(place[1]) == initial_garage_id)
-        # contrainte pour t=T
-        model.Add(P[(k, T)] == initial_idx + 1)
-        
-    ##Contraintes modelisant qu'un camion qui reste au garage a t=1 ne sort pas
-    for k in range(1, nvehicule+1):
-        # récupérer l'indice (0-based) du garage initial du véhicule k
-        initial_garage_id = int(vehiculeFleet[k-1][2])
-        initial_idx = next(i for i, place in enumerate(places_list) if place[0] == "G" and int(place[1]) == initial_garage_id)
-
-        # Si P[k,1] == initial_idx + 1 alors pour tout t>1, P[k,t] == initial_idx + 1
-        is_at_initial_garage_t1 = model.NewBoolVar(f"is_at_initial_garage_k{k}_t1")
-        model.Add(P[(k, 1)] == initial_idx + 1).OnlyEnforceIf(is_at_initial_garage_t1)
-        model.Add(P[(k, 1)] != initial_idx + 1).OnlyEnforceIf(is_at_initial_garage_t1.Not())
-
-        for t in range(2, T+1):
-            model.Add(P[(k, t)] == initial_idx + 1).OnlyEnforceIf(is_at_initial_garage_t1)
-    
-    
-    
-    
-    # Pour chaque véhicule k et pas t, si à t-1 il était dans le dépôt d_idx,
-    # alors à t il doit aller dans UNE station.
-    depot_indices = [i for i, place in enumerate(places_list) if place[0] == "D"]
-    station_indices = [i for i, place in enumerate(places_list) if place[0] == "S"]
-
-    for k in range(1, nvehicule+1):
-        for t in range(1, T):
-            for d_idx in depot_indices:
-                is_at_d_prev = model.NewBoolVar(f"is_at_d_k{k}_t{t}_d{d_idx}")
-                model.Add(P[(k, t)] == d_idx+1).OnlyEnforceIf(is_at_d_prev)
-                model.Add(P[(k, t)] != d_idx+1).OnlyEnforceIf(is_at_d_prev.Not())
-
-                # booléens pour aller vers UNE station (interdit de rester au dépôt)
-                b_stations = []
-                for s_idx in station_indices:
-                    b = model.NewBoolVar(f"b_toS_k{k}_t{t}_fromd{d_idx}_to{s_idx}")
-                    b_stations.append(b)
-                    model.Add(P[(k, t+1)] == s_idx+1).OnlyEnforceIf(b)
-                    model.Add(P[(k, t+1)] != s_idx+1).OnlyEnforceIf(b.Not())
-
-                # Si il était au dépôt à t, il doit aller vers exactement UNE station à t+1
-                model.Add(sum(b_stations) == 1).OnlyEnforceIf(is_at_d_prev)
-
-
-
-    # Si un véhicule k est au dépôt d à l'instant t et transporte le produit p,
-    # alors sa charge augmente (strictement) entre t-1 et t et la baisse du dépôt
-    # pour ce produit est exactement égale à cette augmentation.
-    for k in range(1, nvehicule+1):
-        for t in range(1, T):
-            for d in range(1, ndepot+1):
-                depot_id = depotMat[d-1][0]
-                depot_index = next(i for i, place in enumerate(places_list) if place[0] == "D" and place[1] == depot_id)
-                for p in range(1, nprod+1):
-                    is_at_depot = model.NewBoolVar(f"is_at_depot_k{k}_t{t}_d{d}_p{p}")
-                    is_prod = model.NewBoolVar(f"is_prod_k{k}_t{t}_p{p}")
-
-                    model.Add(P[(k, t)] == depot_index + 1).OnlyEnforceIf(is_at_depot)
-                    model.Add(P[(k, t)] != depot_index + 1).OnlyEnforceIf(is_at_depot.Not())
-
-                    model.Add(TC[(k, t)] == p).OnlyEnforceIf(is_prod)
-                    model.Add(TC[(k, t)] != p).OnlyEnforceIf(is_prod.Not())
-
-                    # charge du camion augmente strictement
-                    model.Add(QCA[(k, t)] > QCA[(k, t-1)]).OnlyEnforceIf([is_at_depot, is_prod])
-                    # diminution du dépôt égale à l'augmentation du camion
-                    model.Add(QCA[(k, t)] - QCA[(k, t-1)] == QD[(d, p, t-1)] - QD[(d, p, t)]).OnlyEnforceIf([is_at_depot, is_prod])
-
-
-    # si aucun camion ne charge au dépôt pour un produit p entre t-1 et t, alors QD[(d,p,t)] = QD[(d,p,t-1)] ;
-    # si le dépôt perd du volume, cette perte est exactement la somme des quantités chargées par les véhicules présents.
-    
-    LOAD = {}  # LOAD[(k,d,p,t)] = quantité chargée par k au dépôt d pour produit p entre t-1 et t
-
-    for k in range(1, nvehicule+1):
-        for d in range(1, ndepot+1):
-            depot_id = depotMat[d-1][0]
-            depot_index = next(i for i, place in enumerate(places_list) if place[0] == "D" and place[1] == depot_id)
-            max_cap = int(vehiculeFleet[k-1][1])
-            for p in range(1, nprod+1):
-                for t in range(1, T+1):  # intervalle [t-1,t]
-                    LOAD[(k,d,p,t)] = model.NewIntVar(0, max_cap, f"LOAD_{k}_{d}_{p}_{t}")
-
-                    is_at_depot = model.NewBoolVar(f"is_at_depot_k{k}_t{t}_d{d}")
-                    is_prod    = model.NewBoolVar(f"is_prod_k{k}_t{t}_p{p}")
-
-                    # réifications
-                    model.Add(P[(k,t)] == depot_index+1).OnlyEnforceIf(is_at_depot)
-                    model.Add(P[(k,t)] != depot_index+1).OnlyEnforceIf(is_at_depot.Not())
-                    model.Add(TC[(k,t)] == p).OnlyEnforceIf(is_prod)
-                    model.Add(TC[(k,t)] != p).OnlyEnforceIf(is_prod.Not())
-
-                    # si présent et même produit → LOAD = augmentation du camion
-                    model.Add(LOAD[(k,d,p,t)] == QCA[(k,t)] - QCA[(k,t-1)]).OnlyEnforceIf([is_at_depot, is_prod])
-
-                    # sinon pas de charge
-                    model.Add(LOAD[(k,d,p,t)] == 0).OnlyEnforceIf(is_at_depot.Not())
-                    model.Add(LOAD[(k,d,p,t)] == 0).OnlyEnforceIf(is_prod.Not())
-
-    # Agrégation sur les véhicules : la baisse du dépôt = somme des LOAD
-    for d in range(1, ndepot+1):
-        for p in range(1, nprod+1):
-            for t in range(1, T+1):
-                model.Add(QD[(d, p, t-1)] - QD[(d, p, t)] == sum(LOAD[(k,d,p,t)] for k in range(1, nvehicule+1)))
-                
-                
-    #Si un camion doit changer du type de produit à un depot donné son volume doit être vide
-    for k in range(1, nvehicule+1):
-        for t in range(1, T):
-            for d in range(1, ndepot+1):
-                depot_id = depotMat[d-1][0]
-                depot_index = next(i for i, place in enumerate(places_list) if place[0] == "D" and place[1] == depot_id)
-
-                is_at_depot_t = model.NewBoolVar(f"is_at_depot_k{k}_t{t}_d{d}")
-                model.Add(P[(k, t)] == depot_index + 1).OnlyEnforceIf(is_at_depot_t)
-                model.Add(P[(k, t)] != depot_index + 1).OnlyEnforceIf(is_at_depot_t.Not())
-
-                change_prod = model.NewBoolVar(f"change_prod_k{k}_t{t}_d{d}")
-                model.Add(TC[(k, t)] != TC[(k, t-1)]).OnlyEnforceIf(change_prod)
-                model.Add(TC[(k, t)] == TC[(k, t-1)]).OnlyEnforceIf(change_prod.Not())
-
-                # (optionnel) forcer que le changement n'arrive que si on est au dépôt
-                model.Add(is_at_depot_t == 1).OnlyEnforceIf(change_prod)
-
-                # si changement au dépôt alors le camion était vide avant (t-1)
-                model.Add(QCA[(k, t-1)] == 0).OnlyEnforceIf([is_at_depot_t, change_prod])
-            
-    ##Si un camion arrive dans une station s au temps t transportant le produit p,
-    ##alors la quantité du camion diminue strictement entre t-1 et t et la quantité de la station augmente exactement de cette diminution.
-    # Variables de livraison et contraintes associées
-    DEL = {}  # DEL[(k,s,p,t)] = quantité livrée par k à la station s pour produit p entre t-1 et t
-
-    for k in range(1, nvehicule+1):
-        max_cap = int(vehiculeFleet[k-1][1])
-        for s in range(1, nstation+1):
-            station_id = stationMat[s-1][0]
-            station_index = next(i for i, place in enumerate(places_list) if place[0] == "S" and place[1] == station_id)
-            for p in range(1, nprod+1):
-                for t in range(1, T+1):
-                    DEL[(k, s, p, t)] = model.NewIntVar(0, max_cap, f"DEL_{k}_{s}_{p}_{t}")
-
-                    is_at_s = model.NewBoolVar(f"is_at_s_k{k}_t{t}_s{s}")
-                    is_prod = model.NewBoolVar(f"is_prod_k{k}_t{t}_p{p}")
-
-                    # réifications
-                    model.Add(P[(k, t)] == station_index + 1).OnlyEnforceIf(is_at_s)
-                    model.Add(P[(k, t)] != station_index + 1).OnlyEnforceIf(is_at_s.Not())
-                    model.Add(TC[(k, t)] == p).OnlyEnforceIf(is_prod)
-                    model.Add(TC[(k, t)] != p).OnlyEnforceIf(is_prod.Not())
-
-                    # si le camion est à la station s à t et transporte p :
-                    # - sa charge diminue strictement entre t-1 et t
-                    # - la livraison DEL est égale à cette diminution
-                    model.Add(QCA[(k, t)] < QCA[(k, t-1)]).OnlyEnforceIf([is_at_s, is_prod])
-                    model.Add(DEL[(k, s, p, t)] == QCA[(k, t-1)] - QCA[(k, t)]).OnlyEnforceIf([is_at_s, is_prod])
-
-                    # sinon DEL = 0
-                    model.Add(DEL[(k, s, p, t)] == 0).OnlyEnforceIf(is_at_s.Not())
-                    model.Add(DEL[(k, s, p, t)] == 0).OnlyEnforceIf(is_prod.Not())
-
-    # Agrégation : l'augmentation de la station = somme des livraisons reçues
-    for s in range(1, nstation+1):
-        for p in range(1, nprod+1):
-            for t in range(1, T+1):
-                model.Add(QS[(s, p, t)] - QS[(s, p, t-1)] == sum(DEL[(k, s, p, t)] for k in range(1, nvehicule+1)))
-                
-                
-    
-    # Forcer un départ immédiat : si un camion k est à la station s au temps t,
-    # il ne peut pas être à la même station au temps t+1.
-    for k in range(1, nvehicule+1):
-        for s in range(1, nstation+1):
-            station_id = stationMat[s-1][0]
-            station_index = next(i for i, place in enumerate(places_list) if place[0] == "S" and place[1] == station_id)
-            for t in range(1, T):                   # t de 1 à T-1, on regarde t+1
-                is_at_s = model.NewBoolVar(f"is_at_s_k{k}_t{t}_s{s}")
-                model.Add(P[(k, t)] == station_index + 1).OnlyEnforceIf(is_at_s)
-                model.Add(P[(k, t)] != station_index + 1).OnlyEnforceIf(is_at_s.Not())
-                # si présent à t alors à t+1 il doit quitter la station
-                model.Add(P[(k, t+1)] != station_index + 1).OnlyEnforceIf(is_at_s)
-    
-    
-    
-    def add_objective_min_changeover_distance(model, P, TC, transtionCostMat, distanceMat,
-                                            nprod, nbre_places_totales, nvehicule, T, scale=100):
-        # conversion en entiers (préserve décimales via scale)
-        cost_scaled = [[int(round(c * scale)) for c in row] for row in transtionCostMat]
-        dist_scaled = [[int(round(d * scale)) for d in row] for row in distanceMat]
-
-        total_terms = []
         
         for k in range(1, nvehicule+1):
+            for t in range(0, T+1):
+                P[(k,t)] = model.NewIntVar(lb=1, ub=nbre_places_totales, name=f"P_{k}_{t}")
+                TC[(k,t)] = model.NewIntVar(1, nprod, name=f"TC_{k}_{t}")
+                QCA[(k,t)] = model.NewIntVar(0, vehiculeFleet[k-1][1], name=f"QCA_{k}_{t}")
+        
+        #Initialisation des positions,
+        for k in range(1, nvehicule+1):
+            #Position initiale
+            garage_id = vehiculeFleet[k-1][2]
+            garage_index = next(i for i, place in enumerate(places_list) if place[0] == "G" and int(place[1]) == garage_id)
+            model.Add(P[(k,0)] == garage_index + 1)  # +1 car les variables sont de 1 à nbre_places_totales
+            
+            #Type de produit initial
+            initial_product = int(vehiculeFleet[k-1][3])
+            model.Add(TC[(k,0)] == initial_product)
+            
+            #Quantité initiale
+            model.Add(QCA[(k,0)] == 0)
+            #Quantité finale
+            model.Add(QCA[(k,T)] == 0)
+        
+        
+        
+        ##Définition des variables concernant les dépôts
+        #QD_dpt est la quantité du produit du type p qu contient le dépôt d au moment t
+        QD = {}
+        
+        
+        for d in range(1, ndepot+1):
+            for p in range(1, nprod+1):
+                for t in range(T+1):
+                    QD[(d, p, t)] = model.NewIntVar(0, depotMat[d-1][p+2], f"QD_{d}_{p}_{t}")
+        
+        #Initialisation des stocks des dépôts
+        for d in range(1, ndepot+1):
+            for p in range(1, nprod+1):
+                model.Add(QD[(d, p, 0)] == depotMat[d-1][p+2])
+                    
+        ##Définition des variables concernant les stations
+        #QS_spt est la quantité du produit du type p qu contient la station s au moment t
+        QS = {}
+        
+        for s in range(1, nstation+1):
+            for p in range(1, nprod+1):
+                for t in range(T+1):
+                    QS[(s, p, t)] = model.NewIntVar(0, stationMat[s-1][p+2], f"QS_{s}_{p}_{t}")
+                    
+    
+        
+        
+        #Initialisation des quantités des stations et des stocks des dépôts
+        for s in range(1, nstation+1):
+            for p in range(1, nprod+1):
+                model.Add(QS[(s, p, 0)] == 0)
+                #Contrainte des quantié finale des stations
+                model.Add(QS[(s, p, T)] == stationMat[s-1][p+2])
+        
+        ##Contraintes modelisant qu'un camion qui quitte un garage doit aller à un dépôt
+        garage_indices = [i for i, place in enumerate(places_list) if place[0] == "G"]
+        depot_indices = [i for i, place in enumerate(places_list) if place[0] == "D"]
+
+        for k in range(1, nvehicule+1):
             for t in range(1, T+1):
-                b_trans = {}
+                for g in garage_indices:
+                    is_at_g = model.NewBoolVar(f"is_at_g_k{k}_t{t-1}_g{g}")
+                    # réification: is_at_g <=> P[k,t-1] == g+1 (P est 1-based)
+                    model.Add(P[(k, t-1)] == g+1).OnlyEnforceIf(is_at_g)
+                    model.Add(P[(k, t-1)] != g+1).OnlyEnforceIf(is_at_g.Not())
+
+                    # options autorisées à t : rester au même garage (g) ou aller dans un dépôt
+                    allowed = [g] + depot_indices
+                    b_vars = []
+                    for j in allowed:
+                        b = model.NewBoolVar(f"b_move_k{k}_t{t}_fromg{g}_toj{j}")
+                        b_vars.append(b)
+                        model.Add(P[(k, t)] == j+1).OnlyEnforceIf(b)
+                        model.Add(P[(k, t)] != j+1).OnlyEnforceIf(b.Not())
+
+                    # si is_at_g alors exactement une option doit être vraie
+                    model.Add(sum(b_vars) == 1).OnlyEnforceIf(is_at_g)
+                    
+        
+        ##Contraintes modelisant que si un vehicule revient au garage il ne sort plus
+        # indices (0-based) des garages
+        garage_indices = [i for i, place in enumerate(places_list) if place[0] == "G"]
+
+        for k in range(1, nvehicule+1):
+            for t in range(2, T):  # on commence à 1 pour permettre un départ initial du garage
+                for g in garage_indices:
+                    is_at_g = model.NewBoolVar(f"is_at_g_k{k}_t{t}_g{g}")
+                    # is_at_g <=> P[k,t] == g+1
+                    model.Add(P[(k, t)] == g+1).OnlyEnforceIf(is_at_g)
+                    model.Add(P[(k, t)] != g+1).OnlyEnforceIf(is_at_g.Not())
+                    # si is_at_g alors pour tout u>t, P[k,u] == g+1
+                    for u in range(t+1, T+1):
+                        model.Add(P[(k, u)] == g+1).OnlyEnforceIf(is_at_g)
+                        
+                        
+                        
+        ##une contraint pour dire qu'un véhicule ne doit pas changer de garage s'il doit revenir dans un garage
+        garage_indices = [i for i, place in enumerate(places_list) if place[0] == "G"]
+
+        for k in range(1, nvehicule+1):
+            # récupérer l'indice (0-based) du garage initial du véhicule k
+            initial_garage_id = int(vehiculeFleet[k-1][2])
+            initial_idx = next(i for i, place in enumerate(places_list) if place[0] == "G" and int(place[1]) == initial_garage_id)
+
+            # Interdire d'être dans un garage différent du garage initial, pour tout t
+            for t in range(0, T+1):
+                for g in garage_indices:
+                    if g != initial_idx:
+                        model.Add(P[(k, t)] != g+1)
+        
+        #Au garage le volume ne change pas
+        for k in range(1, nvehicule+1):
+            for t in range(1, T+1):
+                for g in garage_indices:
+                    is_at_g = model.NewBoolVar(f"is_at_g_k{k}_t{t}_g{g}")
+                    model.Add(P[(k, t)] == g+1).OnlyEnforceIf(is_at_g)
+                    model.Add(P[(k, t)] != g+1).OnlyEnforceIf(is_at_g.Not())
+                    # Si le véhicule est au garage g à l'instant t, sa charge ne change pas entre t-1 et t
+                    model.Add(QCA[(k, t)] == QCA[(k, t-1)]).OnlyEnforceIf(is_at_g)
+                    
+                    
+        ##A t=0 et t=T les véhicules sont dans les garages (déjà fait pour t=0)
+        for k in range(1, nvehicule+1):
+            # récupérer l'indice (0-based) du garage initial du véhicule k
+            initial_garage_id = int(vehiculeFleet[k-1][2])
+            initial_idx = next(i for i, place in enumerate(places_list) if place[0] == "G" and int(place[1]) == initial_garage_id)
+            # contrainte pour t=T
+            model.Add(P[(k, T)] == initial_idx + 1)
+            
+        ##Contraintes modelisant qu'un camion qui reste au garage a t=1 ne sort pas
+        for k in range(1, nvehicule+1):
+            # récupérer l'indice (0-based) du garage initial du véhicule k
+            initial_garage_id = int(vehiculeFleet[k-1][2])
+            initial_idx = next(i for i, place in enumerate(places_list) if place[0] == "G" and int(place[1]) == initial_garage_id)
+
+            # Si P[k,1] == initial_idx + 1 alors pour tout t>1, P[k,t] == initial_idx + 1
+            is_at_initial_garage_t1 = model.NewBoolVar(f"is_at_initial_garage_k{k}_t1")
+            model.Add(P[(k, 1)] == initial_idx + 1).OnlyEnforceIf(is_at_initial_garage_t1)
+            model.Add(P[(k, 1)] != initial_idx + 1).OnlyEnforceIf(is_at_initial_garage_t1.Not())
+
+            for t in range(2, T+1):
+                model.Add(P[(k, t)] == initial_idx + 1).OnlyEnforceIf(is_at_initial_garage_t1)
+        
+        
+        
+        
+        # Pour chaque véhicule k et pas t, si à t-1 il était dans le dépôt d_idx,
+        # alors à t il doit aller dans UNE station.
+        depot_indices = [i for i, place in enumerate(places_list) if place[0] == "D"]
+        station_indices = [i for i, place in enumerate(places_list) if place[0] == "S"]
+
+        for k in range(1, nvehicule+1):
+            for t in range(1, T):
+                for d_idx in depot_indices:
+                    is_at_d_prev = model.NewBoolVar(f"is_at_d_k{k}_t{t}_d{d_idx}")
+                    model.Add(P[(k, t)] == d_idx+1).OnlyEnforceIf(is_at_d_prev)
+                    model.Add(P[(k, t)] != d_idx+1).OnlyEnforceIf(is_at_d_prev.Not())
+
+                    # booléens pour aller vers UNE station (interdit de rester au dépôt)
+                    b_stations = []
+                    for s_idx in station_indices:
+                        b = model.NewBoolVar(f"b_toS_k{k}_t{t}_fromd{d_idx}_to{s_idx}")
+                        b_stations.append(b)
+                        model.Add(P[(k, t+1)] == s_idx+1).OnlyEnforceIf(b)
+                        model.Add(P[(k, t+1)] != s_idx+1).OnlyEnforceIf(b.Not())
+
+                    # Si il était au dépôt à t, il doit aller vers exactement UNE station à t+1
+                    model.Add(sum(b_stations) == 1).OnlyEnforceIf(is_at_d_prev)
+
+
+
+        # Si un véhicule k est au dépôt d à l'instant t et transporte le produit p,
+        # alors sa charge augmente (strictement) entre t-1 et t et la baisse du dépôt
+        # pour ce produit est exactement égale à cette augmentation.
+        for k in range(1, nvehicule+1):
+            for t in range(1, T):
+                for d in range(1, ndepot+1):
+                    depot_id = depotMat[d-1][0]
+                    depot_index = next(i for i, place in enumerate(places_list) if place[0] == "D" and place[1] == depot_id)
+                    for p in range(1, nprod+1):
+                        is_at_depot = model.NewBoolVar(f"is_at_depot_k{k}_t{t}_d{d}_p{p}")
+                        is_prod = model.NewBoolVar(f"is_prod_k{k}_t{t}_p{p}")
+
+                        model.Add(P[(k, t)] == depot_index + 1).OnlyEnforceIf(is_at_depot)
+                        model.Add(P[(k, t)] != depot_index + 1).OnlyEnforceIf(is_at_depot.Not())
+
+                        model.Add(TC[(k, t)] == p).OnlyEnforceIf(is_prod)
+                        model.Add(TC[(k, t)] != p).OnlyEnforceIf(is_prod.Not())
+
+                        # charge du camion augmente strictement
+                        model.Add(QCA[(k, t)] > QCA[(k, t-1)]).OnlyEnforceIf([is_at_depot, is_prod])
+                        # diminution du dépôt égale à l'augmentation du camion
+                        model.Add(QCA[(k, t)] - QCA[(k, t-1)] == QD[(d, p, t-1)] - QD[(d, p, t)]).OnlyEnforceIf([is_at_depot, is_prod])
+
+
+        # si aucun camion ne charge au dépôt pour un produit p entre t-1 et t, alors QD[(d,p,t)] = QD[(d,p,t-1)] ;
+        # si le dépôt perd du volume, cette perte est exactement la somme des quantités chargées par les véhicules présents.
+        
+        LOAD = {}  # LOAD[(k,d,p,t)] = quantité chargée par k au dépôt d pour produit p entre t-1 et t
+
+        for k in range(1, nvehicule+1):
+            for d in range(1, ndepot+1):
+                depot_id = depotMat[d-1][0]
+                depot_index = next(i for i, place in enumerate(places_list) if place[0] == "D" and place[1] == depot_id)
+                max_cap = int(vehiculeFleet[k-1][1])
                 for p in range(1, nprod+1):
-                    for q in range(1, nprod+1):
-                        b = model.NewBoolVar(f"b_trans_k{k}_t{t}_p{p}_q{q}")
-                        c = model.NewBoolVar(f"c")
-                        d = model.NewBoolVar(f"d")
-                        b_trans[(p, q)] = b
-                        
-                        model.Add(TC[(k, t-1)] == p).OnlyEnforceIf(c)
-                        model.Add(TC[(k, t)] == q).OnlyEnforceIf(d)
-                        
-                        model.Add(TC[(k, t-1)] != p).OnlyEnforceIf(c.Not())
-                        model.Add(TC[(k, t)] != q).OnlyEnforceIf(d.Not())
-                        
-                        model.Add(b == 1).OnlyEnforceIf([c, d])
-                model.Add(sum(b_trans.values()) == 1)
+                    for t in range(1, T+1):  # intervalle [t-1,t]
+                        LOAD[(k,d,p,t)] = model.NewIntVar(0, max_cap, f"LOAD_{k}_{d}_{p}_{t}")
 
-                for (p, q), b in b_trans.items():
-                    total_terms.append(cost_scaled[p-1][q-1] * b)
+                        is_at_depot = model.NewBoolVar(f"is_at_depot_k{k}_t{t}_d{d}")
+                        is_prod    = model.NewBoolVar(f"is_prod_k{k}_t{t}_p{p}")
 
-                # Distance parcourue: réifier (P_{t-1} -> P_t)
-                b_pos = {}
-                for i in range(1, nbre_places_totales+1):
-                    for j in range(1, nbre_places_totales+1):
-                        b = model.NewBoolVar(f"b_pos_k{k}_t{t}_i{i}_j{j}")
-                        b_pos[(i, j)] = b
-                        
-                        c = model.NewBoolVar(f"c")
-                        d = model.NewBoolVar(f"d")
-                        
-                        model.Add(P[(k, t-1)] == i).OnlyEnforceIf(c)
-                        model.Add(P[(k, t-1)] != i).OnlyEnforceIf(c.Not())
-                        model.Add(P[(k, t)] == j).OnlyEnforceIf(d)
-                        model.Add(P[(k, t)] != j).OnlyEnforceIf(d.Not())
-                        model.Add(b == 1).OnlyEnforceIf([c, d])
-                model.Add(sum(b_pos.values()) == 1)
-                for (i, j), b in b_pos.items():
-                    total_terms.append(dist_scaled[i-1][j-1] * b)
+                        # réifications
+                        model.Add(P[(k,t)] == depot_index+1).OnlyEnforceIf(is_at_depot)
+                        model.Add(P[(k,t)] != depot_index+1).OnlyEnforceIf(is_at_depot.Not())
+                        model.Add(TC[(k,t)] == p).OnlyEnforceIf(is_prod)
+                        model.Add(TC[(k,t)] != p).OnlyEnforceIf(is_prod.Not())
 
-        model.Minimize(sum(total_terms))
+                        # si présent et même produit → LOAD = augmentation du camion
+                        model.Add(LOAD[(k,d,p,t)] == QCA[(k,t)] - QCA[(k,t-1)]).OnlyEnforceIf([is_at_depot, is_prod])
 
-    # Appel (ajuste scale si besoin, ex: 1000 pour 3 décimales)
-    add_objective_min_changeover_distance(model, P, TC, transtionCostMat, distanceMat,
-                                        nprod, nbre_places_totales, nvehicule, T, scale=100)
-    
-    
-    
-    
-    
-    
+                        # sinon pas de charge
+                        model.Add(LOAD[(k,d,p,t)] == 0).OnlyEnforceIf(is_at_depot.Not())
+                        model.Add(LOAD[(k,d,p,t)] == 0).OnlyEnforceIf(is_prod.Not())
 
+        # Agrégation sur les véhicules : la baisse du dépôt = somme des LOAD
+        for d in range(1, ndepot+1):
+            for p in range(1, nprod+1):
+                for t in range(1, T+1):
+                    model.Add(QD[(d, p, t-1)] - QD[(d, p, t)] == sum(LOAD[(k,d,p,t)] for k in range(1, nvehicule+1)))
+                    
+                    
+        #Si un camion doit changer du type de produit à un depot donné son volume doit être vide
+        for k in range(1, nvehicule+1):
+            for t in range(1, T):
+                for d in range(1, ndepot+1):
+                    depot_id = depotMat[d-1][0]
+                    depot_index = next(i for i, place in enumerate(places_list) if place[0] == "D" and place[1] == depot_id)
+
+                    is_at_depot_t = model.NewBoolVar(f"is_at_depot_k{k}_t{t}_d{d}")
+                    model.Add(P[(k, t)] == depot_index + 1).OnlyEnforceIf(is_at_depot_t)
+                    model.Add(P[(k, t)] != depot_index + 1).OnlyEnforceIf(is_at_depot_t.Not())
+
+                    change_prod = model.NewBoolVar(f"change_prod_k{k}_t{t}_d{d}")
+                    model.Add(TC[(k, t)] != TC[(k, t-1)]).OnlyEnforceIf(change_prod)
+                    model.Add(TC[(k, t)] == TC[(k, t-1)]).OnlyEnforceIf(change_prod.Not())
+
+                    # (optionnel) forcer que le changement n'arrive que si on est au dépôt
+                    model.Add(is_at_depot_t == 1).OnlyEnforceIf(change_prod)
+
+                    # si changement au dépôt alors le camion était vide avant (t-1)
+                    model.Add(QCA[(k, t-1)] == 0).OnlyEnforceIf([is_at_depot_t, change_prod])
+                
+        ##Si un camion arrive dans une station s au temps t transportant le produit p,
+        ##alors la quantité du camion diminue strictement entre t-1 et t et la quantité de la station augmente exactement de cette diminution.
+        # Variables de livraison et contraintes associées
+        DEL = {}  # DEL[(k,s,p,t)] = quantité livrée par k à la station s pour produit p entre t-1 et t
+
+        for k in range(1, nvehicule+1):
+            max_cap = int(vehiculeFleet[k-1][1])
+            for s in range(1, nstation+1):
+                station_id = stationMat[s-1][0]
+                station_index = next(i for i, place in enumerate(places_list) if place[0] == "S" and place[1] == station_id)
+                for p in range(1, nprod+1):
+                    for t in range(1, T+1):
+                        DEL[(k, s, p, t)] = model.NewIntVar(0, max_cap, f"DEL_{k}_{s}_{p}_{t}")
+
+                        is_at_s = model.NewBoolVar(f"is_at_s_k{k}_t{t}_s{s}")
+                        is_prod = model.NewBoolVar(f"is_prod_k{k}_t{t}_p{p}")
+
+                        # réifications
+                        model.Add(P[(k, t)] == station_index + 1).OnlyEnforceIf(is_at_s)
+                        model.Add(P[(k, t)] != station_index + 1).OnlyEnforceIf(is_at_s.Not())
+                        model.Add(TC[(k, t)] == p).OnlyEnforceIf(is_prod)
+                        model.Add(TC[(k, t)] != p).OnlyEnforceIf(is_prod.Not())
+
+                        # si le camion est à la station s à t et transporte p :
+                        # - sa charge diminue strictement entre t-1 et t
+                        # - la livraison DEL est égale à cette diminution
+                        model.Add(QCA[(k, t)] < QCA[(k, t-1)]).OnlyEnforceIf([is_at_s, is_prod])
+                        model.Add(DEL[(k, s, p, t)] == QCA[(k, t-1)] - QCA[(k, t)]).OnlyEnforceIf([is_at_s, is_prod])
+
+                        # sinon DEL = 0
+                        model.Add(DEL[(k, s, p, t)] == 0).OnlyEnforceIf(is_at_s.Not())
+                        model.Add(DEL[(k, s, p, t)] == 0).OnlyEnforceIf(is_prod.Not())
+
+        # Agrégation : l'augmentation de la station = somme des livraisons reçues
+        for s in range(1, nstation+1):
+            for p in range(1, nprod+1):
+                for t in range(1, T+1):
+                    model.Add(QS[(s, p, t)] - QS[(s, p, t-1)] == sum(DEL[(k, s, p, t)] for k in range(1, nvehicule+1)))
+                    
+                    
+        
+        # Forcer un départ immédiat : si un camion k est à la station s au temps t,
+        # il ne peut pas être à la même station au temps t+1.
+        for k in range(1, nvehicule+1):
+            for s in range(1, nstation+1):
+                station_id = stationMat[s-1][0]
+                station_index = next(i for i, place in enumerate(places_list) if place[0] == "S" and place[1] == station_id)
+                for t in range(1, T):                   # t de 1 à T-1, on regarde t+1
+                    is_at_s = model.NewBoolVar(f"is_at_s_k{k}_t{t}_s{s}")
+                    model.Add(P[(k, t)] == station_index + 1).OnlyEnforceIf(is_at_s)
+                    model.Add(P[(k, t)] != station_index + 1).OnlyEnforceIf(is_at_s.Not())
+                    # si présent à t alors à t+1 il doit quitter la station
+                    model.Add(P[(k, t+1)] != station_index + 1).OnlyEnforceIf(is_at_s)
+        
+        
+        
+        # def add_objective_min_changeover_distance(model, P, TC, transtionCostMat, distanceMat,
+        #                                         nprod, nbre_places_totales, nvehicule, T, scale=100):
+        #     # conversion en entiers (préserve décimales via scale)
+        #     cost_scaled = [[int(round(c * scale)) for c in row] for row in transtionCostMat]
+        #     dist_scaled = [[int(round(d * scale)) for d in row] for row in distanceMat]
+
+        #     total_terms = []
+            
+        #     for k in range(1, nvehicule+1):
+        #         for t in range(1, T+1):
+        #             b_trans = {}
+        #             for p in range(1, nprod+1):
+        #                 for q in range(1, nprod+1):
+        #                     b = model.NewBoolVar(f"b_trans_k{k}_t{t}_p{p}_q{q}")
+        #                     c = model.NewBoolVar(f"c")
+        #                     d = model.NewBoolVar(f"d")
+        #                     b_trans[(p, q)] = b
+                            
+        #                     model.Add(TC[(k, t-1)] == p).OnlyEnforceIf(c)
+        #                     model.Add(TC[(k, t)] == q).OnlyEnforceIf(d)
+                            
+        #                     model.Add(TC[(k, t-1)] != p).OnlyEnforceIf(c.Not())
+        #                     model.Add(TC[(k, t)] != q).OnlyEnforceIf(d.Not())
+                            
+        #                     model.Add(b == 1).OnlyEnforceIf([c, d])
+        #             model.Add(sum(b_trans.values()) == 1)
+
+        #             for (p, q), b in b_trans.items():
+        #                 total_terms.append(cost_scaled[p-1][q-1] * b)
+
+        #             # Distance parcourue: réifier (P_{t-1} -> P_t)
+        #             b_pos = {}
+        #             for i in range(1, nbre_places_totales+1):
+        #                 for j in range(1, nbre_places_totales+1):
+        #                     b = model.NewBoolVar(f"b_pos_k{k}_t{t}_i{i}_j{j}")
+        #                     b_pos[(i, j)] = b
+                            
+        #                     c = model.NewBoolVar(f"c")
+        #                     d = model.NewBoolVar(f"d")
+                            
+        #                     model.Add(P[(k, t-1)] == i).OnlyEnforceIf(c)
+        #                     model.Add(P[(k, t-1)] != i).OnlyEnforceIf(c.Not())
+        #                     model.Add(P[(k, t)] == j).OnlyEnforceIf(d)
+        #                     model.Add(P[(k, t)] != j).OnlyEnforceIf(d.Not())
+        #                     model.Add(b == 1).OnlyEnforceIf([c, d])
+        #             model.Add(sum(b_pos.values()) == 1)
+        #             for (i, j), b in b_pos.items():
+        #                 total_terms.append(dist_scaled[i-1][j-1] * b)
+
+        #     model.Minimize(sum(total_terms))
+
+        # # Appel (ajuste scale si besoin, ex: 1000 pour 3 décimales)
+        # add_objective_min_changeover_distance(model, P, TC, transtionCostMat, distanceMat,
+        #                                     nprod, nbre_places_totales, nvehicule, T, scale=100)
+        
+        
+        
+        
+        
+        
+
+        
+        solver = cp_model.CpSolver()
+        status = solver.Solve(model)
+        print(f"Status: {solver.StatusName(status)}")
+        
+        # ###Afficher les positions des camions
+        # if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+        #     for k in range(1, nvehicule+1):
+        #         print(f"Trajet du camion {k}:")
+        #         for t in range(0, T+1):
+        #             pos_index = solver.Value(P[(k,t)]) - 1
+        #             pos = places_list[pos_index]
+        #             prod_type = solver.Value(TC[(k,t)])
+        #             quantity = solver.Value(QCA[(k,t)])
+        #             print(f"  Temps {t}: Position {pos[0]}-{pos[1]} at ({pos[2][0]}, {pos[2][1]}), Produit Type: {prod_type}, Quantité: {quantity}")
+        #         print()
+        
+        
+        # ###Aficher la quantité des stations par produit et par temps
+        # for s in range(1, nstation+1):  
+        #     print(f"Stock de la station {s}:")
+        #     for p in range(1, nprod+1):
+        #         print(f"  Produit {p}: ", end="")
+        #         for t in range(0, T+1):
+        #             quantity = solver.Value(QS[(s, p, t)])
+        #             print(f"T{t}:{quantity} ", end="")
+        #         print()
+        #     print()
+        
+        # #Afficher la quantité des dépôts par produit et par temps
+        # for d in range(1, ndepot+1):  
+        #     print(f"Stock du dépôt {d}:")
+        #     for p in range(1, nprod+1):
+        #         print(f"  Produit {p}: ", end="")
+        #         for t in range(0, T+1):
+        #             quantity = solver.Value(QD[(d, p, t)])
+        #             print(f"T{t}:{quantity} ", end="")
+        #         print()
+        #     print()
+        
+        ###Affichage synthétique par camion : trajet + produit (coût change)
     
-    solver = cp_model.CpSolver()
-    status = solver.Solve(model)
-    print(f"Status: {solver.StatusName(status)}")
-    
-    # ###Afficher les positions des camions
-    # if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-    #     for k in range(1, nvehicule+1):
-    #         print(f"Trajet du camion {k}:")
-    #         for t in range(0, T+1):
-    #             pos_index = solver.Value(P[(k,t)]) - 1
-    #             pos = places_list[pos_index]
-    #             prod_type = solver.Value(TC[(k,t)])
-    #             quantity = solver.Value(QCA[(k,t)])
-    #             print(f"  Temps {t}: Position {pos[0]}-{pos[1]} at ({pos[2][0]}, {pos[2][1]}), Produit Type: {prod_type}, Quantité: {quantity}")
-    #         print()
-    
-    
-    # ###Aficher la quantité des stations par produit et par temps
-    # for s in range(1, nstation+1):  
-    #     print(f"Stock de la station {s}:")
-    #     for p in range(1, nprod+1):
-    #         print(f"  Produit {p}: ", end="")
-    #         for t in range(0, T+1):
-    #             quantity = solver.Value(QS[(s, p, t)])
-    #             print(f"T{t}:{quantity} ", end="")
-    #         print()
-    #     print()
-    
-    # #Afficher la quantité des dépôts par produit et par temps
-    # for d in range(1, ndepot+1):  
-    #     print(f"Stock du dépôt {d}:")
-    #     for p in range(1, nprod+1):
-    #         print(f"  Produit {p}: ", end="")
-    #         for t in range(0, T+1):
-    #             quantity = solver.Value(QD[(d, p, t)])
-    #             print(f"T{t}:{quantity} ", end="")
-    #         print()
-    #     print()
-    
-    ###Affichage synthétique par camion : trajet + produit (coût change)
-    
-    
+        if  status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+            break
+        
     # Affichage synthétique par camion : trajet + produit (coût change)
     to_return = ""
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
@@ -553,7 +563,7 @@ def modelsRo(nprod, ndepot, ngarage, nstation, nvehicule, transtionCostMat, vehi
 
             to_return += f"{k}: " + " - ".join(route_parts) + "\n"
             to_return += f"{k}: " + " - ".join(prod_parts) + "\n"
-        to_return += "\n"
+            to_return += "\n"
         
     ##calculer nombre de vehicules utilisés
     used_vehicles = 0
@@ -675,12 +685,16 @@ def extraire_inf(file_name="small/MPVRP_S_001_s9_d1_p2.dat"):
 #modelsRo(*extraire_inf("small/MPVRP_S_001_s9_d1_p2.dat"))
 
 def write_output(nprod, ndepot, ngarage, nstation, nvehicule, transtionCostMat, vehiculeFleet, depotMat, garageMat, stationMat,file_name=""):
+    import time
     name = file_name.split("/")[-1]
     file_name = f"Sol_{name}"
+    a = time.time()
     content = modelsRo(nprod, ndepot, ngarage, nstation, nvehicule, transtionCostMat, vehiculeFleet, depotMat, garageMat, stationMat)
+    b = time.time()
+    content += f"\n{b - a:.2f}\n"
     with open(file_name, 'w') as file:
         file.write(content)
         
-write_output(*extraire_inf("small/MPVRP_S_001_s9_d1_p2.dat"))
+write_output(*extraire_inf("medium/MPVRP_M_001_s55_d4_p7.dat"))
         
 
