@@ -87,13 +87,12 @@ def modelsRo(nprod, ndepot, ngarage, nstation, nvehicule, transtionCostMat, vehi
     #     minT , maxT = maxT, minT  # échanger si nécessaire
     
     # print("minT:", minT, "maxT:", maxT)
-        
+    print("T fixé à:", T)
     from ortools.sat.python import cp_model
     
     model = cp_model.CpModel()
     
     
-    print("Trying with T =", T )
     ##P_kt est la variable de postion des caminons
     P={}
     ##T_kt est la variable gardant le type de produit du camion k au moment t
@@ -697,6 +696,6 @@ def write_output(nprod, ndepot, ngarage, nstation, nvehicule, transtionCostMat, 
     with open(file_name, 'w') as file:
         file.write(content)
         
-write_output(*extraire_inf("small/MPVRP_S_001_s9_d1_p2.dat"))
+write_output(*extraire_inf("small/MPVRP_S_033_s13_d1_p2.dat"))
         
 
